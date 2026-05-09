@@ -7,20 +7,21 @@ gets a fully isolated portfolio — perfect for comparing strategies on the
 same machine. No real money involved.
 
 Built as a portfolio project to show off the things juniors usually skip:
-WebSockets, custom hooks with proper cleanup, persistence, password hashing,
-route guards, skeleton loading states, optimistic UI, and a polished dark UI
-with glassmorphism modals.
+WebSockets, custom hooks with proper cleanup, persistence, real auth via
+Supabase, route guards, skeleton loading states, optimistic UI, and a
+polished dark UI with glassmorphism modals.
 
 ![CryptoSim](public/favicon.svg)
 
 ## Highlights
 
-- **Email + password accounts** — register / login flow with PBKDF2-SHA256
-  password hashing via the Web Crypto API, per-user 16-byte salts, 120k
-  iterations. Sessions persist across refreshes; route guards bounce
-  unauthenticated visitors to `/login`. Each account gets its own isolated
-  cash, holdings, trades and equity curve — switch users on the same device
-  and you'll see two completely independent portfolios.
+- **Email + password accounts via Supabase Auth** — registration, sign-in
+  and session refresh are delegated to Supabase, so passwords are hashed
+  server-side and JWTs are auto-rotated. Sessions persist across refreshes
+  and tabs; route guards bounce unauthenticated visitors to `/login`. Each
+  account gets its own isolated cash, holdings, trades and equity curve —
+  switch users on the same device and you'll see two completely independent
+  portfolios.
 - **Live prices via Binance WebSocket** — `wss://stream.binance.com:9443/stream`
   combined `@miniTicker` streams. The custom `useCryptoPrice` hook owns the
   socket lifecycle (open on mount, close on unmount, exponential-backoff
@@ -54,7 +55,8 @@ with glassmorphism modals.
 | Framework      | React 18 + Vite 5                                   |
 | Styling        | Tailwind CSS 3 (custom dark palette + animations)   |
 | Routing        | React Router 6                                      |
-| State          | Zustand with `persist` (localStorage)               |
+| State          | Zustand (portfolio in `localStorage`, session via Supabase) |
+| Auth           | [Supabase Auth](https://supabase.com/docs/guides/auth) (email + password) |
 | Charts         | Recharts (sparklines + portfolio area chart)        |
 | Icons          | lucide-react                                        |
 | Notifications  | sonner                                              |
@@ -63,19 +65,37 @@ with glassmorphism modals.
 
 ## Getting started
 
+### 1. Create a free Supabase project
+
+1. Go to <https://supabase.com>, sign up, and click **New project**. Pick any
+   name and password, choose the closest region, hit **Create**.
+2. Once the project is provisioned, open **Project Settings → API** and copy
+   the **Project URL** and the **anon / public** key.
+3. (Recommended for local dev) Open **Authentication → Providers → Email**
+   and turn **Confirm email** off. Otherwise every new account has to click
+   a confirmation link before signing in.
+
+### 2. Configure the app
+
+```bash
+cp .env.example .env
+# then edit .env and paste in the URL + anon key from step 1
+```
+
+### 3. Run it
+
 ```bash
 npm install
 npm run dev      # start Vite on http://localhost:5173
 npm run build    # production bundle in dist/
 npm run preview  # serve the built bundle
 
-# Optional: smoke-test the auth path (PBKDF2 + repo round-trip)
-node scripts/smoke-auth.mjs
 # Optional: smoke-test multi-resolution equity compaction
 node scripts/smoke-equity.mjs
 ```
 
-No environment variables needed — both APIs are public.
+CoinGecko and Binance both work without API keys. The only env vars are the
+Supabase ones.
 
 On first visit you'll land on the register screen. Create an account, get
 $10,000 of virtual cash, and start trading. Sign out from the user menu in
@@ -109,8 +129,8 @@ src/
 │   └── usePortfolioMetrics.js # Live valuation + equity sampling
 ├── lib/
 │   ├── binance.js             # Combined-stream WebSocket client
-│   ├── passwordHash.js        # PBKDF2 hash / verify via Web Crypto
-│   └── userRepo.js            # User CRUD (swap for Supabase here)
+│   ├── supabase.js            # Supabase client (reads VITE_SUPABASE_* env)
+│   └── userRepo.js            # Supabase Auth wrapper (signUp / signIn / etc.)
 ├── pages/
 │   ├── Dashboard.jsx          # Equity, positions, reset
 │   ├── History.jsx            # Trade log table
@@ -146,46 +166,51 @@ growing unbounded.
 
 ## Authentication design
 
-Auth is intentionally implemented client-side so the project keeps its
-zero-config story (no env vars, no backend to host). The structure mirrors
-what you'd build on a server:
+Auth runs through **Supabase Auth** (email + password). The Supabase client
+takes care of password hashing, JWT issuance and silent token refresh; the
+app code only sees a small, synchronous user record.
 
-- `src/lib/passwordHash.js` — wraps `crypto.subtle.deriveBits` with PBKDF2
-  (SHA-256, 120 000 iterations, 16-byte salt, 32-byte key). Comparison is
-  XOR-accumulated to discourage trivial timing attacks.
-- `src/lib/userRepo.js` — the only file that touches `localStorage` for
-  user records. Swap its body for a Supabase / REST client and the rest of
-  the app keeps working unchanged.
-- `src/store/authStore.js` — Zustand session store with `persist`
-  middleware that **only** stores the public user record (id, email,
-  displayName, createdAt). Password material never leaves `userRepo`.
-- `src/components/RequireAuth.jsx` — route guard that redirects to
-  `/login` while preserving the originally-requested path so the user
-  lands back where they tried to go.
-- `src/store/portfolioStore.js` — wallets are keyed by userId, so two
-  accounts on the same device get fully isolated cash, holdings, trade
-  history and equity curves.
+- `src/lib/supabase.js` — single Supabase client, reads
+  `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from `.env`. Throws a
+  loud, helpful error if either is missing.
+- `src/lib/userRepo.js` — thin wrapper exposing `registerUser`,
+  `authenticate`, `signOut`, `updateProfile`, `getCurrentUser` and a
+  `subscribeAuth(cb)` helper. Maps the Supabase user into the public
+  shape the UI expects: `{ id, email, displayName, createdAt }`. The
+  `displayName` lives in `auth.users.user_metadata.display_name`.
+- `src/store/authStore.js` — Zustand session store. On boot it hydrates
+  from `supabase.auth.getSession()` and subscribes to
+  `onAuthStateChange`, so cross-tab sign-out and silent token refresh
+  are picked up automatically. No `persist` middleware here — Supabase
+  already persists the session in `localStorage`.
+- `src/components/RequireAuth.jsx` — route guard. Renders nothing while
+  the initial session hydration is in flight (otherwise every refresh
+  flashes `/login`), then either passes through or redirects while
+  remembering the originally-requested path.
+- `src/store/portfolioStore.js` — wallets are keyed by `userId` (now the
+  Supabase user UUID), so two accounts on the same device still get
+  fully isolated cash, holdings, trade history and equity curves.
 
-> ⚠️ This is demo-grade auth: a real product would hash on the server,
-> store records in a real database, and use HTTP-only session cookies.
-> The shape is correct (per-user salt, slow KDF, never expose hashes),
-> just the trust boundary is wrong for a production app.
+> The anon key is safe to ship to clients: it only grants whatever your
+> Supabase Row Level Security policies allow. Never put the
+> `service_role` key in the front-end bundle.
 
 ## Going further
 
-This project intentionally uses `localStorage` for persistence so it works
-zero-config on a static host. The persistence layer is isolated in two
-files — `src/lib/userRepo.js` (auth) and `src/store/portfolioStore.js`
-(wallets) — so swapping for Supabase, Firebase or your own Express + SQL
-backend is a contained change.
+The portfolio data (cash, holdings, trades, equity history) still lives in
+`localStorage` — that's intentional for now, so the app works offline and
+keeps a fast feel. The persistence layer is isolated in
+`src/store/portfolioStore.js`, ready to be swapped for Supabase Postgres
+tables (with RLS scoped to `auth.uid()`) when cross-device sync is needed.
 
 Other ideas to extend:
 
-- Email verification + password reset flow on top of a real auth provider
+- Move portfolios into Supabase Postgres for real cross-device sync
+- Password reset flow (`supabase.auth.resetPasswordForEmail`)
+- OAuth providers (Google / GitHub) via the same `userRepo` wrapper
 - Limit / stop orders that match against the live ticker
 - Public leaderboards comparing equity curves across users
 - Per-asset detail page with the CoinGecko `/market_chart` data already wired
-- Sync portfolios across devices via Supabase realtime
 
 ## License
 
