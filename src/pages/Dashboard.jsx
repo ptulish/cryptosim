@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDownRight, ArrowUpRight, RefreshCw, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
+import { AllocationChart } from '../components/AllocationChart.jsx';
 import { AnimatedCounter } from '../components/AnimatedCounter.jsx';
 import { PortfolioChart } from '../components/PortfolioChart.jsx';
 import { PriceTag } from '../components/PriceTag.jsx';
+import { RangeSelector, filterByRange } from '../components/RangeSelector.jsx';
 import { Sparkline } from '../components/Sparkline.jsx';
 import { SkeletonStat } from '../components/Skeleton.jsx';
 import { TradeModal } from '../components/TradeModal.jsx';
@@ -24,8 +26,14 @@ export function Dashboard({ coinsById, prices, metrics, loading }) {
   const { reset } = useMyTradingActions();
   const [resetOpen, setResetOpen] = useState(false);
   const [trade, setTrade] = useState(null);
+  const [range, setRange] = useState('1D');
 
   const positive = metrics.totalPnL >= 0;
+
+  const visibleHistory = useMemo(
+    () => filterByRange(metrics.equityHistory, range),
+    [metrics.equityHistory, range],
+  );
 
   return (
     <div className="space-y-6">
@@ -75,15 +83,21 @@ export function Dashboard({ coinsById, prices, metrics, loading }) {
           </div>
 
           <div className="mt-6 border-t border-border-subtle pt-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-slate-300">
-                Equity over time
-              </h3>
-              <span className="text-xs text-slate-500">
-                Sampled live every ~5s
-              </span>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-medium text-slate-300">
+                  Equity over time
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Sampled live · adaptive resolution to support 1M views
+                </p>
+              </div>
+              <RangeSelector value={range} onChange={setRange} />
             </div>
-            <PortfolioChart data={metrics.equityHistory} />
+            <PortfolioChart
+              data={visibleHistory}
+              hasAnyHistory={metrics.equityHistory.length > 1}
+            />
           </div>
         </div>
 
@@ -111,6 +125,22 @@ export function Dashboard({ coinsById, prices, metrics, loading }) {
           )}
         </div>
       </div>
+
+      <section className="card-elevated p-5">
+        <header className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Allocation</h2>
+            <p className="text-xs text-slate-500">
+              How your equity is split across cash and holdings.
+            </p>
+          </div>
+        </header>
+        <AllocationChart
+          positions={metrics.positions}
+          cash={metrics.cash}
+          totalEquity={metrics.totalEquity}
+        />
+      </section>
 
       <section className="card-elevated overflow-hidden">
         <header className="flex items-center justify-between border-b border-border-subtle px-5 py-4">

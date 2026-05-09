@@ -130,19 +130,30 @@ export const usePortfolioStore = create(
       },
 
       /**
-       * Records a single equity sample for the given user. Throttled at the
-       * call site to ~5s and capped to the last 720 points so localStorage
-       * doesn't grow unbounded.
+       * Records a single equity sample for the given user.
+       *
+       * Storage strategy is multi-resolution: we keep dense samples for the
+       * recent past and progressively thin older history so the buffer never
+       * grows unbounded but a 1-month chart still has shape.
+       *
+       *   age < 1h   → keep 1 sample per 30s
+       *   age < 24h  → keep 1 sample per 5min
+       *   age < 7d   → keep 1 sample per 1h
+       *   age >= 7d  → keep 1 sample per 6h
+       *
+       * Compaction runs after every append, so localStorage stays bounded at
+       * ~600 points (a few KB) regardless of how long the account has lived.
        */
       recordEquity(userId, equity) {
         if (!userId || !Number.isFinite(equity)) return;
         const now = Date.now();
         get()._writeSlice(userId, (s) => {
-          const last = s.equityHistory[s.equityHistory.length - 1];
-          if (last && now - last.ts < 4_000) return s;
-          const next = [...s.equityHistory, { ts: now, equity }];
-          if (next.length > 720) next.splice(0, next.length - 720);
-          return { ...s, equityHistory: next };
+          const history = s.equityHistory;
+          const last = history[history.length - 1];
+          if (last && now - last.ts < 25_000) return s;
+          const appended = [...history, { ts: now, equity }];
+          const compacted = compactEquityHistory(appended, now);
+          return { ...s, equityHistory: compacted };
         });
       },
 
@@ -224,4 +235,43 @@ function cryptoRandomId() {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/**
+ * Returns the minimum gap (ms) we want between samples whose age is `ageMs`.
+ * Older points become more spaced out; newer points stay dense.
+ */
+function bucketSizeForAge(ageMs) {
+  if (ageMs < 60 * 60 * 1000) return 30 * 1000; // 30s for last hour
+  if (ageMs < 24 * 60 * 60 * 1000) return 5 * 60 * 1000; // 5m for last day
+  if (ageMs < 7 * 24 * 60 * 60 * 1000) return 60 * 60 * 1000; // 1h for last week
+  return 6 * 60 * 60 * 1000; // 6h beyond
+}
+
+/**
+ * Walks history newest-to-oldest, dropping any sample that lands inside the
+ * same age bucket as a more recent one. Always keeps the freshest sample.
+ *
+ * Pure function — exported below for unit testing.
+ */
+export function compactEquityHistory(history, now = Date.now()) {
+  if (!Array.isArray(history) || history.length <= 1) return history;
+  const sorted = [...history].sort((a, b) => a.ts - b.ts);
+  const reversed = sorted.reverse();
+  const kept = [];
+  let lastKeptTs = null;
+  for (const sample of reversed) {
+    if (lastKeptTs === null) {
+      kept.push(sample);
+      lastKeptTs = sample.ts;
+      continue;
+    }
+    const ageOfPrev = now - lastKeptTs;
+    const minGap = bucketSizeForAge(ageOfPrev);
+    if (lastKeptTs - sample.ts >= minGap) {
+      kept.push(sample);
+      lastKeptTs = sample.ts;
+    }
+  }
+  return kept.reverse();
 }

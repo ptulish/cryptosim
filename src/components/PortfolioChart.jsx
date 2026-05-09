@@ -7,15 +7,18 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { Clock } from 'lucide-react';
 import { formatUSD } from '../utils/format.js';
 import { STARTING_BALANCE } from '../store/portfolioStore.js';
 
-function TimeTick({ x, y, payload }) {
+function TimeTick({ x, y, payload, longFormat }) {
   const date = new Date(payload.value);
-  const label = date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const label = longFormat
+    ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
   return (
     <text
       x={x}
@@ -50,16 +53,28 @@ function ChartTooltip({ active, payload }) {
   );
 }
 
-export function PortfolioChart({ data }) {
+export function PortfolioChart({ data, hasAnyHistory = true }) {
   const hasData = data && data.length > 1;
   const last = hasData ? data[data.length - 1].equity : STARTING_BALANCE;
   const positive = last >= STARTING_BALANCE;
   const stroke = positive ? '#22c55e' : '#f87171';
 
+  // Use date labels (Sep 4) on the x-axis when the visible range exceeds
+  // a couple of days, otherwise hour:minute for intraday views.
+  const longFormat =
+    hasData && data[data.length - 1].ts - data[0].ts > 2 * 24 * 60 * 60 * 1000;
+
   if (!hasData) {
     return (
-      <div className="flex h-64 items-center justify-center text-sm text-slate-500">
-        Make a trade to start tracking your equity curve.
+      <div className="flex h-64 flex-col items-center justify-center text-center">
+        <div className="grid h-10 w-10 place-items-center rounded-full bg-bg-elevated">
+          <Clock className="h-4 w-4 text-slate-400" />
+        </div>
+        <p className="mt-2 max-w-xs text-sm text-slate-500">
+          {hasAnyHistory
+            ? 'Not enough data in this range yet — try a wider window or check back later.'
+            : 'Make a trade to start tracking your equity curve.'}
+        </p>
       </div>
     );
   }
@@ -77,7 +92,7 @@ export function PortfolioChart({ data }) {
           <CartesianGrid stroke="#1f2230" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="ts"
-            tick={<TimeTick />}
+            tick={<TimeTick longFormat={longFormat} />}
             axisLine={false}
             tickLine={false}
             interval="preserveStartEnd"

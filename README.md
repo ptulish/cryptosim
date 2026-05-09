@@ -28,9 +28,16 @@ with glassmorphism modals.
 - **Top-50 market data via CoinGecko REST** — public endpoint, no API key.
   Cached in a `useCoinList` hook with `AbortController` cancellation and
   60-second background refresh.
-- **Equity curve over time** — sampled every ~5 seconds, capped at 720 points,
-  rendered with Recharts. The first feature that makes the dashboard feel
-  "alive".
+- **Equity curve over time** — sampled every ~30 seconds with **adaptive
+  multi-resolution storage** (30s for the last hour, 5min for the day, 1h
+  for the week, 6h beyond). A 1H / 1D / 1W / 1M / ALL range selector filters
+  the visible window, and the chart switches to date labels for ranges past
+  two days. Total localStorage footprint stays ~1 KB regardless of how long
+  the account has lived.
+- **Portfolio allocation donut** — Recharts pie chart showing how equity is
+  split across cash and each holding. Hover tooltips, color-coded legend
+  with USD value + percentage per slice, total equity displayed in the
+  donut hole.
 - **Portfolio persistence** — Zustand + `persist` middleware writes cash,
   holdings, trades and equity history to `localStorage`, keyed per user.
   Refresh the page, everything is still there.
@@ -64,6 +71,8 @@ npm run preview  # serve the built bundle
 
 # Optional: smoke-test the auth path (PBKDF2 + repo round-trip)
 node scripts/smoke-auth.mjs
+# Optional: smoke-test multi-resolution equity compaction
+node scripts/smoke-equity.mjs
 ```
 
 No environment variables needed — both APIs are public.
@@ -81,12 +90,14 @@ src/
 ├── main.jsx
 ├── index.css                  # Tailwind layers + design tokens
 ├── components/
+│   ├── AllocationChart.jsx    # Donut chart of holdings + cash
 │   ├── AnimatedCounter.jsx    # rAF tween for big balance numbers
 │   ├── AuthLayout.jsx         # Centered shell for login / register
 │   ├── Modal.jsx              # Glassmorphism modal with ESC + scroll lock
 │   ├── Navbar.jsx             # Top nav, WS status pulse, user menu
 │   ├── PortfolioChart.jsx     # Equity-over-time area chart
 │   ├── PriceTag.jsx           # Flashes green/red on tick
+│   ├── RangeSelector.jsx      # 1H / 1D / 1W / 1M / ALL pills
 │   ├── RequireAuth.jsx        # Route guard
 │   ├── Skeleton.jsx           # Shimmer placeholders
 │   ├── Sparkline.jsx          # Inline 7d charts
